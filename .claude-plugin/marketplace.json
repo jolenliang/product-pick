@@ -1,0 +1,15 @@
+{
+  "name": "product-pick",
+  "description": "Decision-science driven product selection for AI agents.",
+  "owner": {
+    "name": "Jolen Liang",
+    "url": "https://github.com/jolenliang"
+  },
+  "plugins": [
+    {
+      "name": "product-pick",
+      "source": "./",
+      "description": "Pick what to buy and how much to spend: ROC weights, Pareto frontier, sensitivity analysis, and an explicit blind-spot list — not a vibe-based top-3."
+    }
+  ]
+}

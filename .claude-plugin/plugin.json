@@ -1,0 +1,19 @@
+{
+  "name": "product-pick",
+  "description": "Product selection via decision science: MCDA scoring, ROC weights, Pareto frontier, sensitivity analysis. Turns an agent into a rigorous buying analyst instead of a vibe-based top-3 list.",
+  "version": "1.1.0",
+  "author": {
+    "name": "Jolen Liang",
+    "url": "https://github.com/jolenliang"
+  },
+  "homepage": "https://github.com/jolenliang/product-pick",
+  "repository": "https://github.com/jolenliang/product-pick",
+  "license": "MIT",
+  "keywords": [
+    "product-selection",
+    "decision-making",
+    "mcda",
+    "purchasing",
+    "skills"
+  ]
+}
