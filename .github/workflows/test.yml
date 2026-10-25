@@ -1,0 +1,95 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.8", "3.10", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Show version
+        run: python --version
+
+      - name: Run test suite
+        run: python -m unittest discover -s tests -v
+
+      - name: Smoke test the CLI
+        run: |
+          python skills/product-pick/scripts/pick.py roc --order "weight,warmth,loft"
+          python skills/product-pick/scripts/pick.py run \
+            --attrs "loft:+,weight:-,packed:-,fabric:+" \
+            --weights "46.7,25.7,15.7,9.0" \
+            --data "A:750,780,8.2,4;B:800,1050,9.5,3;C:650,620,6.8,2" \
+            --price "A:2499,B:1899,C:1299" \
+            --axis weight --bands "1000,2000,3000"
+
+  skill-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate SKILL.md frontmatter
+        run: |
+          python - <<'PY'
+          import io, os, re, sys
+          path = "skills/product-pick/SKILL.md"
+          text = io.open(path, encoding="utf-8").read()
+          if not text.startswith("---"):
+              sys.exit("SKILL.md must start with YAML frontmatter")
+          fm = text.split("---", 2)[1]
+          for field in ("name:", "description:"):
+              if field not in fm:
+                  sys.exit("SKILL.md frontmatter missing %s" % field)
+          name = re.search(r"^name:\s*(\S+)", fm, re.M)
+          folder = os.path.basename(os.path.dirname(path))
+          if not name or name.group(1) != folder:
+              sys.exit("frontmatter name %r != folder %r" % (
+                  name.group(1) if name else None, folder))
+          print("frontmatter OK: %s" % folder)
+          PY
+
+      - name: Validate plugin manifests
+        run: |
+          python - <<'PY'
+          import json
+          for p in (".claude-plugin/marketplace.json", ".claude-plugin/plugin.json"):
+              with open(p, encoding="utf-8") as f:
+                  d = json.load(f)
+              assert "name" in d, p
+          mk = json.load(open(".claude-plugin/marketplace.json", encoding="utf-8"))
+          for k in ("name", "owner", "plugins"):
+              assert k in mk, "marketplace.json missing %s" % k
+          for pl in mk["plugins"]:
+              for k in ("name", "source"):
+                  assert k in pl, "plugin entry missing %s" % k
+          print("manifests OK")
+          PY
+
+      - name: Check relative links in README
+        run: |
+          python - <<'PY'
+          import io, os, re, sys
+          s = io.open("README.md", encoding="utf-8").read()
+          links = set(re.findall(r'\]\(([^)#][^)]*)\)', s))
+          bad = [l for l in links
+                 if not l.startswith(("http://", "https://", "mailto:"))
+                 and not os.path.exists(l)]
+          if bad:
+              sys.exit("broken relative links: %s" % bad)
+          print("README links OK")
+          PY
