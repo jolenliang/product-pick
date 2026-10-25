@@ -2,6 +2,7 @@
 
 **让 Agent 用决策科学帮你选东西——不是「给你几个选项」，是算出该买哪个、为什么、多花的钱到底买到了什么。**
 
+[![tests](https://github.com/jolenliang/product-pick/actions/workflows/test.yml/badge.svg)](https://github.com/jolenliang/product-pick/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Agent Skills](https://img.shields.io/badge/Agent%20Skills-compatible-blue)](https://agentskills.io)
 [![Python](https://img.shields.io/badge/python-3.6%2B-yellow)](skills/product-pick/scripts/pick.py)
@@ -144,14 +145,32 @@ b1 阶段有条纪律：**只取品牌，不取产品的榜单评分。** 因为
 npx skills add jolenliang/product-pick -g
 ```
 
+会问你要装给哪个 Agent（Claude Code / Cursor / Codex / OpenCode 等 70+ 个），选一下就好。装到 `~/.claude/skills/product-pick/`，所有项目可用。
+
+**全自动（不问任何问题）**：
+
+```bash
+npx skills add jolenliang/product-pick --all
+```
+
+**只装到当前项目**（去掉 `-g`，落到 `./.claude/skills/`）：
+
+```bash
+npx skills add jolenliang/product-pick
+```
+
+> 需要 Node.js ≥ 22.20。装完**重启 Agent 会话**才会被扫描到。
+
 ### 方式二：Claude Code 插件市场
 
-在 Claude Code 里：
+在 Claude Code 里输入两行：
 
 ```
 /plugin marketplace add jolenliang/product-pick
 /plugin install product-pick@product-pick
 ```
+
+装好后技能带命名空间，可用 `/product-pick:product-pick` 显式调用，也能被自动触发。
 
 ### 方式三：手动（任何 Agent，包括 WorkBuddy）
 
@@ -160,9 +179,26 @@ git clone --depth 1 https://github.com/jolenliang/product-pick.git /tmp/product-
   && cp -r /tmp/product-pick/skills/product-pick ~/.workbuddy/skills/
 ```
 
-其他 Agent 改最后那个目标路径即可（`~/.claude/skills/`、`.cursor/rules/`、`.agents/skills/` …）。
+把最后的目标路径换成你的 Agent 即可：
 
-> **装任何陌生 skill 之前，建议先看一眼它的 `scripts/`。** Skill 本质是可执行代码，这个项目只有一个纯标准库的 Python 文件，你可以两分钟读完。
+| Agent | 目标路径 |
+|---|---|
+| WorkBuddy | `~/.workbuddy/skills/` |
+| Claude Code | `~/.claude/skills/` |
+| Codex | `.agents/skills/` |
+| Cursor | `.cursor/rules/` |
+| 其他 | 你的 Agent 扫描 skill 的目录 |
+
+### 装完怎么确认
+
+```bash
+ls ~/.claude/skills/product-pick/     # 应看到 SKILL.md、references/、scripts/
+python3 ~/.claude/skills/product-pick/scripts/pick.py roc --order "重量,价格,外观"
+```
+
+第二条命令能打印出权重表，就说明装好了。
+
+> **装任何陌生 skill 之前，建议先看一眼它的 `scripts/`。** Skill 本质是可执行代码，会以完整 Agent 权限运行。这个项目只有一个纯标准库的 Python 文件，`README` 里写了它能干什么，你可以两分钟读完确认。
 
 ---
 
@@ -240,6 +276,8 @@ product-pick/
 ├── .claude-plugin/
 │   ├── marketplace.json          # Claude Code 插件市场清单
 │   └── plugin.json
+├── .github/workflows/
+│   └── test.yml                  # CI：测试 + frontmatter/清单/链接校验
 ├── skills/
 │   └── product-pick/
 │       ├── SKILL.md              # 主流程（13 步）
@@ -254,6 +292,8 @@ product-pick/
 │       │   └── category-axes.md          # 18 个品类物理轴配置
 │       └── scripts/
 │           └── pick.py           # 打分引擎（纯标准库，Python 3.6+）
+├── tests/
+│   └── test_pick.py              # 22 个测试，锁住打分引擎的微妙行为
 └── examples/
     └── sleeping-bag.md           # 一次完整真实运行的全过程存档
 ```
@@ -274,6 +314,16 @@ python3 skills/product-pick/scripts/pick.py run \
 ```
 
 输出：权重 + 归一化矩阵 + 得分构成明细 + 权重敏感性 + 两条前沿 + 价格分档。
+
+### 跑测试
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+22 个测试，锁住打分引擎里几个容易静默坏掉的性质：ROC 权重和为 1 且单调递减、归一化端点方向正确、**得分构成横向相加等于总分**、无区分度属性中性化为 0.5、`flip_factor` 确实能把分差归零、价格不参与得分、门槛与缺值候选不进排名。
+
+其中有一个是**回归测试**：两个产品除一项外完全相同，全部差距必须落在那单独一项的贡献里。这正是睡袋那次踩到的坑——压缩体积口径不一致，凭空造出 2.76 分的差距。CI 在 Python 3.8 / 3.10 / 3.12 / 3.13 上跑。
 
 ---
 
