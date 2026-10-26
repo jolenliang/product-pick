@@ -2,6 +2,20 @@
 
 All notable changes to this project. Format follows [Keep a Changelog](https://keepachangelog.com/), versioning follows [SemVer](https://semver.org/).
 
+## [1.2.0] — 2026-10-26
+
+### Fixed
+
+- Fixed negative-valued worst-case adjustments, zero-weight sensitivity crashes, overlapping price-band boundaries, duplicate/invalid price input, and ineffective global `--json` handling.
+- Hardened gate handling: when `--gates` is used, every candidate must be explicitly marked `pass` or `fail`; omitted candidates no longer pass silently.
+- Added opt-in median imputation with explicit output metadata. Strict missing-value exclusion remains the default.
+- Replaced the inconsistent sleeping-bag example with a single corrected five-attribute calculation that excludes incomparable compression-volume data.
+
+### Changed
+
+- Search guidance now uses risk-based depth modes instead of requiring all eight channels for every category.
+- Added Codex global/project installation guidance and fallbacks for missing search or companion skills.
+
 ## [1.1.0] — 2026-10-25
 
 Three fixes after the first real run (sleeping bag selection), all driven by what actually went wrong in practice.
@@ -21,7 +35,7 @@ Three fixes after the first real run (sleeping bag selection), all driven by wha
 
 ### Fixed
 
-- **Scale mismatch in the sleeping bag run.** Tianshi's packing volume had been derived from its stuff-sack dimensions (12.6 L) and compared against Black Ice's measured compressed volume (6.0 L) — two different definitions. This invented a 2.76-point gap and nearly turned "functionally equivalent" into "Black Ice wins." After correcting: exact tie at 72.81.
+- **Scale mismatch in the sleeping bag run.** Tianshi's packing volume had been derived from its stuff-sack dimensions (12.6 L) and compared against Black Ice's measured compressed volume (6.0 L) — two different definitions. This invented a 2.76-point gap and nearly turned "functionally equivalent" into "Black Ice wins." The corrected example now excludes that incomparable attribute from scoring.
 - **Candidates with missing values vanished silently.** They were mentioned only in a trailing note, so the score table simply had one fewer row. Now the table itself states "excluded — failed hard gate" / "excluded — incomplete data" directly beneath the ranking.
 - Single-attribute and flat-attribute edge cases no longer emit duplicate notices.
 

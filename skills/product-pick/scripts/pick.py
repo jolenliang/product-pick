@@ -11,6 +11,7 @@
 
 import argparse
 import json
+import math
 import re
 import sys
 
@@ -52,9 +53,12 @@ def parse_floats(text, label):
     out = []
     for x in split_list(text):
         try:
-            out.append(float(x.replace("%", "")))
+            value = float(x.replace("%", ""))
         except ValueError:
             raise ValueError("%s 里出现非数字：%r" % (label, x))
+        if not math.isfinite(value):
+            raise ValueError("%s 里出现非有限数字：%r" % (label, x))
+        out.append(value)
     return out
 
 
@@ -88,9 +92,12 @@ def parse_data(text, n_attrs):
                 vals.append(None)
             else:
                 try:
-                    vals.append(float(v.replace("%", "")))
+                    value = float(v.replace("%", ""))
                 except ValueError:
                     raise ValueError("产品 %s 的取值不是数字：%r" % (name, v))
+                if not math.isfinite(value):
+                    raise ValueError("产品 %s 的取值不是有限数字：%r" % (name, v))
+                vals.append(value)
         if len(vals) != n_attrs:
             raise ValueError(
                 "产品 %s 有 %d 个取值，但属性有 %d 个" % (name, len(vals), n_attrs))
@@ -107,36 +114,48 @@ def parse_data(text, n_attrs):
 def parse_price(text):
     """'A:2499,B:1899' -> {name: float}"""
     out = {}
-    for chunk in split_list(text):
+    chunks = re.split(r"[,，;；](?=\s*[^,:;，；]+?\s*:)", text)
+    for chunk in [x.strip() for x in chunks if x.strip()]:
         c = chunk.replace("：", ":")
         if ":" not in c:
             raise ValueError("价格项缺少冒号：%r" % chunk)
         name, v = c.split(":", 1)
         name = name.strip()
+        if not name:
+            raise ValueError("价格项产品名为空：%r" % chunk)
+        if name in out:
+            raise ValueError("价格重复：%s" % name)
         try:
-            out[name] = float(v.strip().replace(",", "").replace("¥", "").replace("￥", ""))
+            value = float(v.strip().replace(",", "").replace("¥", "").replace("￥", ""))
         except ValueError:
             raise ValueError("产品 %s 的价格不是数字：%r" % (name, v))
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("产品 %s 的价格必须是非负有限数字：%r" % (name, v))
+        out[name] = value
     return out
 
 
 def parse_gates(text):
-    """'A:fail,B:pass' -> set of names marked fail"""
-    fail = set()
-    for chunk in split_list(text):
+    """'A:fail,B:pass' -> {name: 'fail'|'pass'}"""
+    states = {}
+    for chunk in split_list(text, "[,;，；]"):
         c = chunk.replace("：", ":")
         if ":" not in c:
             raise ValueError("门槛项缺少冒号：%r" % chunk)
         name, state = c.split(":", 1)
         name = name.strip()
         state = state.strip().lower()
+        if not name:
+            raise ValueError("门槛项产品名为空：%r" % chunk)
+        if name in states:
+            raise ValueError("门槛重复：%s" % name)
         if state in ("fail", "f", "不合格", "x", "✗"):
-            fail.add(name)
+            states[name] = "fail"
         elif state in ("pass", "p", "合格", "o", "✓", "ok"):
-            pass
+            states[name] = "pass"
         else:
             raise ValueError("门槛状态只能是 pass / fail，实际是 %r" % state)
-    return fail
+    return states
 
 
 def parse_risk(text):
@@ -148,11 +167,17 @@ def parse_risk(text):
             raise ValueError("不确定度项缺少冒号：%r" % chunk)
         name, v = c.split(":", 1)
         name = name.strip()
+        if not name:
+            raise ValueError("不确定度项产品名为空：%r" % chunk)
+        if name in out:
+            raise ValueError("不确定度重复：%s" % name)
         raw = v.strip().replace("%", "")
         try:
             sigma = float(raw)
         except ValueError:
             raise ValueError("产品 %s 的不确定度不是数字：%r" % (name, v))
+        if not math.isfinite(sigma):
+            raise ValueError("产品 %s 的不确定度不是有限数字：%r" % (name, v))
         if "%" in v:
             sigma = sigma / 100.0
         elif sigma >= 1.0:
@@ -162,6 +187,35 @@ def parse_risk(text):
             raise ValueError("产品 %s 的不确定度应在 0–1（或 0–100%%）之间" % name)
         out[name] = sigma
     return out
+
+
+def impute_median(rows, n_attrs):
+    """用每列已知值的中位数填补缺失值，返回 (rows, details)。"""
+    medians = []
+    for i in range(n_attrs):
+        values = sorted(row[1][i] for row in rows if row[1][i] is not None)
+        if not values:
+            medians.append(None)
+            continue
+        middle = len(values) // 2
+        if len(values) % 2:
+            medians.append(values[middle])
+        else:
+            medians.append((values[middle - 1] + values[middle]) / 2.0)
+
+    details = {}
+    output = []
+    for name, vals in rows:
+        new_vals = list(vals)
+        changed = {}
+        for i, value in enumerate(new_vals):
+            if value is None and medians[i] is not None:
+                new_vals[i] = medians[i]
+                changed[i] = medians[i]
+        if changed:
+            details[name] = changed
+        output.append((name, new_vals))
+    return output, details
 
 
 # ---------- 计算 ----------
@@ -209,13 +263,26 @@ def scores_of(norm, weights):
 
 def flip_factor(weights, d, k):
     """把属性 k 的权重乘以 f 后，两产品得分差归零所需的 f。不可行返回 None。"""
-    if abs(d[k]) < EPS:
+    if abs(d[k]) < EPS or weights[k] <= EPS:
         return None
     others = sum(weights[i] * d[i] for i in range(len(d)) if i != k)
     f = -others / (weights[k] * d[k])
     if f <= 1e-9 or f > 1e6:
         return None
     return f
+
+
+def adjust_for_worst_case(rows, attrs, risk):
+    """按产品不确定度把每个数值往不利方向移动。"""
+    adjusted_rows = []
+    for name, vals in rows:
+        sigma = risk.get(name, 0.0)
+        adjusted = []
+        for value, (_, sign) in zip(vals, attrs):
+            delta = abs(value) * sigma
+            adjusted.append(value - delta if sign == "+" else value + delta)
+        adjusted_rows.append((name, adjusted))
+    return adjusted_rows
 
 
 def sens_analysis(attrs, weights, norm, ranked_names, scores):
@@ -312,11 +379,21 @@ def pareto(points, axis_lower_better):
 
 
 def band_split(points, edges):
-    bounds = [-INF] + sorted(edges) + [INF]
+    ordered = sorted(edges)
+    if any(not math.isfinite(edge) for edge in ordered):
+        raise ValueError("价格分档边界必须是有限数字")
+    if any(abs(a - b) <= EPS for a, b in zip(ordered, ordered[1:])):
+        raise ValueError("价格分档边界不能重复")
+    bounds = [-INF] + ordered + [INF]
     out = []
     for i in range(len(bounds) - 1):
         lo, hi = bounds[i], bounds[i + 1]
-        seg = [p for p in points if p["axis"] > lo - EPS and p["axis"] <= hi + EPS]
+        # Intervals are [lo, hi), except the final interval [lo, +inf).
+        # A value equal to a boundary therefore belongs to exactly one band.
+        if hi == INF:
+            seg = [p for p in points if p["axis"] >= lo]
+        else:
+            seg = [p for p in points if p["axis"] >= lo and p["axis"] < hi]
         if not seg:
             out.append({"lo": lo, "hi": hi, "best": None, "count": 0})
             continue
@@ -351,7 +428,7 @@ def cmd_roc(args):
         raise ValueError("排序为空")
     n = len(names)
     ws = roc_weights(n)
-    if args.json:
+    if args.json or getattr(args, "json_global", False):
         print(json.dumps({
             "order": names,
             "weights_pct": [round(w * 100, 1) for w in ws],
@@ -385,8 +462,21 @@ def cmd_run(args):
     weights, raw_weights = parse_weights(args.weights, n_attr)
 
     rows = parse_data(args.data, n_attr)
-    gates = parse_gates(args.gates) if args.gates else set()
+    gates = parse_gates(args.gates) if args.gates else {}
     prices = parse_price(args.price) if args.price else {}
+
+    product_names = set(name for name, _ in rows)
+    unknown_prices = sorted(set(prices) - product_names)
+    if unknown_prices:
+        raise ValueError("价格里的产品不在数据中：%s" % "、".join(unknown_prices))
+    unknown_gates = sorted(set(gates) - product_names)
+    if unknown_gates:
+        raise ValueError("门槛里的产品不在数据中：%s" % "、".join(unknown_gates))
+    if gates and set(gates) != product_names:
+        missing_gates = sorted(product_names - set(gates))
+        raise ValueError(
+            "启用 --gates 后必须为每个候选明确标记 pass 或 fail，缺少：%s"
+            % "、".join(missing_gates))
 
     notes = []
 
@@ -394,7 +484,7 @@ def cmd_run(args):
     gated_out = []
     kept = []
     for name, vals in rows:
-        if name in gates:
+        if gates.get(name) == "fail":
             gated_out.append(name)
         else:
             kept.append((name, vals))
@@ -405,6 +495,8 @@ def cmd_run(args):
 
     # 预算过滤（在归一化之前，归一化必须重算）
     if args.max_price is not None:
+        if not math.isfinite(args.max_price) or args.max_price < 0:
+            raise ValueError("预算上限必须是非负有限数字")
         seg = []
         dropped = []
         for name, vals in kept:
@@ -421,7 +513,18 @@ def cmd_run(args):
                      % (args.max_price, len(seg), "、".join(dropped) if dropped else "无"))
         kept = seg
 
-    # 完整性
+    # 完整性。默认严格排除；只有显式 --impute median 才会补值。
+    imputed = {}
+    if args.impute == "median":
+        kept, imputed = impute_median(kept, n_attr)
+        if imputed:
+            imputation_notes = []
+            for name in sorted(imputed):
+                cells = ["%s=%s" % (attrs[i][0], num(value))
+                         for i, value in sorted(imputed[name].items())]
+                imputation_notes.append("%s（%s）" % (name, "、".join(cells)))
+            notes.append("中位数插补：%s（插补值仅作参考，需在盲区中披露）"
+                         % "；".join(imputation_notes))
     complete = [(n, v) for n, v in kept if all(x is not None for x in v)]
     incomplete = [n for n, v in kept if any(x is None for x in v)]
     if incomplete:
@@ -472,8 +575,14 @@ def cmd_run(args):
             all(norm[ranked[0]][i] >= norm[r][i] - EPS for i in range(n_attr))
             for r in ranked[1:])
 
+    has_zero_weight = any(w <= EPS for w in weights)
     if len(ranked) < 2:
         verdict_key, verdict_text = "single", "只有一个有效候选，无需做敏感性分析。"
+    elif has_zero_weight and not dominates_all:
+        verdict_key, verdict_text = "limited", (
+            "**敏感性分析不完整。** 当前有属性权重为 0，乘法式调权无法模拟"
+            "从 0 提高到正数的情形；赢家也不是在所有属性上都不劣于其他候选。"
+            "不要把当前排名称为绝对稳健，必要时把该属性重新纳入排序后重算。")
     elif not sens:
         verdict_key, verdict_text = "absolute", (
             "**绝对稳健。** 赢家在所有属性上都不劣于其他候选"
@@ -493,16 +602,7 @@ def cmd_run(args):
         unknown = [n for n in risk if n not in known]
         if unknown:
             raise ValueError("--worst 里的产品不在有效候选中：%s" % "、".join(unknown))
-        adj_rows = []
-        for name, vals in complete:
-            sigma = risk.get(name, 0.0)
-            adj = []
-            for i, v in enumerate(vals):
-                if attrs[i][1] == "+":
-                    adj.append(v * (1.0 - sigma))
-                else:
-                    adj.append(v * (1.0 + sigma))
-            adj_rows.append((name, adj))
+        adj_rows = adjust_for_worst_case(complete, attrs, risk)
         norm_w, _ = normalize(adj_rows, attrs)
         scores_w = scores_of(norm_w, weights)
         ranked_w = sorted(scores_w.keys(), key=lambda k: scores_w[k], reverse=True)
@@ -547,12 +647,16 @@ def cmd_run(args):
         if not prices:
             raise ValueError("--bands 需要同时提供 --price")
         edges = parse_floats(args.bands, "分档边界")
+        missing_band_prices = [n for n, _ in complete if n not in prices]
+        if missing_band_prices:
+            raise ValueError("使用 --bands 时这些候选缺少价格：%s"
+                             % "、".join(missing_band_prices))
         pts = [{"name": n, "score": scores[n], "axis": prices[n]} for n, _ in complete
                if n in prices]
         bands = band_split(pts, edges)
 
     # ---- 输出 ----
-    if args.json:
+    if args.json or getattr(args, "json_global", False):
         payload = {
             "attrs": [{"name": a[0], "sign": a[1]} for a in attrs],
             "weights_pct": [round(w * 100, 1) for w in weights],
@@ -564,6 +668,10 @@ def cmd_run(args):
                                  for i in range(len(attrs))]) for n in ranked),
             "gated_out": gated_out,
             "incomplete": incomplete,
+            "imputed": {
+                name: {attrs[index][0]: value for index, value in cells.items()}
+                for name, cells in imputed.items()
+            },
             "sensitivity": sens,
             "verdict": verdict_key,
             "verdict_text": verdict_text,
@@ -590,7 +698,10 @@ def cmd_run(args):
     for i, (nm, sign) in enumerate(attrs):
         cells = []
         for name in ranked:
-            cells.append("%.2f (%s)" % (norm[name][i], num(data_map[name][i])))
+            raw_label = num(data_map[name][i])
+            if name in imputed and i in imputed[name]:
+                raw_label += "，插补"
+            cells.append("%.2f (%s)" % (norm[name][i], raw_label))
         print("| %s %s | %s |" % (nm, sign, " | ".join(cells)))
     print()
     print("括号内为原始值。分数是相对位置，不是绝对好坏——换个候选池就会变。\n")
@@ -756,13 +867,15 @@ def build_parser():
     x.add_argument("--data", required=True, help='产品:值,值;产品:值,值（缺值写 ?）')
     x.add_argument("--price", default=None, help='产品:价格;产品:价格（只展示，不进得分）')
     x.add_argument("--axis", default=None, help="副前沿的物理轴（必须是某属性名）")
-    x.add_argument("--bands", default=None, help='价格分档边界，如 "1000,2000"')
+    x.add_argument("--bands", default=None, help='价格分档边界，如 "1000,2000"；区间为 [前一边界, 当前边界)')
     x.add_argument("--gates", default=None, help='硬门槛，如 "A:fail;B:pass"')
     x.add_argument("--max-price", dest="max_price", type=float, default=None,
                    help="预算上限，过滤后重新归一化重算")
     x.add_argument("--worst", default=None,
                    help='各产品的数据不确定度，如 "A款:0,B款:0.12,C款:0.05"；'
                         "该产品在不利方向偏移这么多后重算排名")
+    x.add_argument("--impute", choices=["none", "median"], default="none",
+                   help="缺失值处理：默认排除；median 使用同列已知值中位数并标注插补")
     x.add_argument("--json", dest="json", action="store_true", help="输出 JSON")
     x.set_defaults(func=cmd_run)
 

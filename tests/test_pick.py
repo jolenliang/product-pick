@@ -147,6 +147,14 @@ class TestSensitivity(unittest.TestCase):
     def test_no_flip_when_no_gap_on_that_attr(self):
         self.assertIsNone(pick.flip_factor([0.5, 0.5], [0.0, 0.4], 0))
 
+    def test_zero_weight_has_no_flip_factor(self):
+        self.assertIsNone(pick.flip_factor([1.0, 0.0], [0.5, -0.5], 1))
+
+    def test_negative_worst_case_moves_in_adverse_direction(self):
+        rows = [("A", [-9.0]), ("B", [-8.0])]
+        adjusted = pick.adjust_for_worst_case(rows, [("comfort", "-")], {"A": 0.1, "B": 0.0})
+        self.assertEqual(adjusted[0][1][0], -8.1)
+
     def test_dominant_product_is_never_flipped(self):
         """Winner not worse on any attribute -> no single-weight flip exists."""
         rows = [("A", [10, 10]), ("B", [5, 5])]
@@ -195,7 +203,7 @@ class TestCli(unittest.TestCase):
             )
 
     def test_gated_out_excluded(self):
-        d = self.run_json(*(self.BASE + ["--gates", "B:fail"]))
+        d = self.run_json(*(self.BASE + ["--gates", "A:pass;B:fail"]))
         names = [r["name"] for r in d["scores"]]
         self.assertIn("A", names)
         self.assertNotIn("B", names)
@@ -215,6 +223,65 @@ class TestCli(unittest.TestCase):
             *(self.BASE + ["--price", "A:300,B:100", "--max-price", "150"])
         )
         self.assertEqual([r["name"] for r in d["scores"]], ["B"])
+
+    def test_price_band_boundary_is_counted_once(self):
+        d = self.run_json(
+            "--attrs", "x:+", "--weights", "1",
+            "--data", "A:1;B:2;C:3",
+            "--price", "A:100,B:200,C:300", "--bands", "200",
+        )
+        self.assertEqual([b["count"] for b in d["bands"]], [1, 2])
+
+    def test_gates_require_explicit_pass_or_fail_for_every_candidate(self):
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_json(
+                "--attrs", "x:+", "--weights", "1",
+                "--data", "A:1;B:2", "--gates", "A:pass",
+            )
+
+    def test_duplicate_price_is_rejected(self):
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_json(
+                "--attrs", "x:+", "--weights", "1",
+                "--data", "A:1;B:2", "--price", "A:100,A:200",
+            )
+
+    def test_zero_weight_is_reported_as_limited_when_winner_is_not_dominant(self):
+        d = self.run_json(
+            "--attrs", "x:+,y:+", "--weights", "100,0",
+            "--data", "A:10,0;B:5,10",
+        )
+        self.assertEqual(d["verdict"], "limited")
+
+    def test_price_thousands_separator_is_supported(self):
+        d = self.run_json(
+            "--attrs", "x:+", "--weights", "1",
+            "--data", "A:1;B:2", "--price", "A:1,299,B:2,499",
+        )
+        prices = dict((row["name"], row["price"]) for row in d["scores"])
+        self.assertEqual(prices, {"A": 1299.0, "B": 2499.0})
+
+    def test_global_json_flag_is_supported(self):
+        out = subprocess.check_output(
+            [sys.executable, PICK_PY, "--json", "run"] + self.BASE,
+            stderr=subprocess.STDOUT,
+        )
+        self.assertEqual(json.loads(out.decode("utf-8"))["attrs"][0]["name"], "x")
+
+    def test_median_imputation_is_opt_in(self):
+        strict = self.run_json(
+            "--attrs", "x:+,y:+", "--weights", "50,50",
+            "--data", "A:1,2;B:2,?;C:3,4",
+        )
+        self.assertIn("B", strict["incomplete"])
+        imputed = self.run_json(
+            "--attrs", "x:+,y:+", "--weights", "50,50",
+            "--data", "A:1,2;B:2,?;C:3,4", "--impute", "median",
+        )
+        self.assertNotIn("B", imputed["incomplete"])
+        self.assertIn("B", [r["name"] for r in imputed["scores"]])
+        self.assertEqual(imputed["imputed"], {"B": {"y": 3.0}})
+        self.assertIn("B（y=3）", "".join(imputed["notes"]))
 
     def test_markdown_contains_contribution_table(self):
         text = self.run_cli(*self.BASE)
